@@ -117,15 +117,8 @@
 
   textarea { resize: vertical; }
 
-  .fresh { animation: freshGlow 2.4s ease both; }
-  @keyframes freshGlow {
-    0%, 35% { box-shadow: 0 0 0 4px rgba(217,100,126,.6); }
-    100%    { box-shadow: 0 0 0 0 rgba(217,100,126,0); }
-  }
-  .live-dot { display: inline-block; width: .6rem; height: .6rem; border-radius: 999px; background: #D9647E; animation: beat 1.4s ease-in-out infinite; }
-
   @media (prefers-reduced-motion: reduce) {
-    .heart, .pulse-heart, .screen, .burst, .wiggle, .rain, .bigHeart, .tease, .fresh, .live-dot { animation: none !important; }
+    .heart, .pulse-heart, .screen, .burst, .wiggle, .rain, .bigHeart, .tease { animation: none !important; }
     .heart, .rain { display: none; }
     #loveBtn.escaped { transition: none; }
   }
@@ -154,17 +147,7 @@
 const CONFIG = {
   herName: '',          // e.g. 'Sara' (empty = "Ciao amore,")
   fromName: '',         // your name for the signature (empty = "— io")
-  storageKey: 'loveQuestionnaire.v1',
-  // Live delivery to #admin through Firebase Realtime Database.
-  // Paste the values from Firebase console → Project settings → Your apps → Web app.
-  // Left empty, answers stay on her device only (old behaviour).
-  firebase: {
-    apiKey: '',
-    authDomain: '',
-    databaseURL: '',
-    projectId: '',
-    appId: ''
-  }
+  storageKey: 'loveQuestionnaire.v1'
 };
 
 const QUESTIONS = [
@@ -204,50 +187,6 @@ function saveSubmissions(list) {
   try { localStorage.setItem(CONFIG.storageKey, JSON.stringify(list)); return true; }
   catch (e) { return false; }
 }
-
-/* ---------- Live delivery (Firebase Realtime Database, REST) ----------
-   Every answer is PUT to submissions/<sid>/answers/<index> the moment she gives it. */
-const FB = CONFIG.firebase;
-const cloudEnabled = () => !!(FB && FB.databaseURL && FB.apiKey);
-const SID_KEY = 'loveQuestionnaire.sid';
-
-function newSid() {
-  const bytes = crypto.getRandomValues(new Uint8Array(12));
-  return Array.from(bytes, b => (b % 36).toString(36)).join('');
-}
-function getSid() {
-  try {
-    let sid = localStorage.getItem(SID_KEY);
-    if (!sid) { sid = newSid(); localStorage.setItem(SID_KEY, sid); }
-    return sid;
-  } catch (e) { return state.sid || (state.sid = newSid()); }
-}
-
-const cloudLatest = {}, cloudFailed = new Set();
-function cloudPut(path, body, attempt = 0) {
-  if (!cloudEnabled()) return;
-  cloudLatest[path] = body;
-  fetch(`${FB.databaseURL.replace(/\/$/, '')}/${path}.json`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    keepalive: true
-  }).then(res => {
-    if (!res.ok) console.warn('Cloud save refused', res.status, path);
-    else if (cloudLatest[path] === body) cloudFailed.delete(path);
-  }).catch(() => {
-    // offline: retry with backoff, unless a newer value for the same answer has been sent meanwhile
-    cloudFailed.add(path);
-    if (attempt < 8) setTimeout(() => { if (cloudLatest[path] === body) cloudPut(path, body, attempt + 1); }, Math.min(30000, 2000 * 2 ** attempt));
-  });
-}
-function cloudSendAnswer(i) {
-  const a = (state.answers[i] || '').trim();
-  if (!a) return;
-  cloudPut(`submissions/${getSid()}/answers/${i}`, { q: QUESTIONS[i].text, a, t: { '.sv': 'timestamp' } });
-}
-function cloudSendDone() { cloudPut(`submissions/${getSid()}/done`, true); }
-window.addEventListener('online', () => cloudFailed.forEach(p => cloudPut(p, cloudLatest[p])));
 
 /* =========================================================
    Helpers
@@ -313,7 +252,6 @@ function clearOverlays() { closeModal(); document.querySelectorAll('.tease').for
    ========================================================= */
 function route() {
   clearOverlays();
-  stopAdminWatch();
   const hash = window.location.hash.replace(/^#\/?/, '').toLowerCase();
   if (hash === 'admin') {
     document.title = 'Risultati 🗝️';
@@ -327,7 +265,7 @@ function route() {
 window.addEventListener('hashchange', route);
 // Admin view updates live if she answers in another tab of the same browser
 window.addEventListener('storage', e => {
-  if (!cloudEnabled() && e.key === CONFIG.storageKey && window.location.hash.toLowerCase().includes('admin')) renderAdminLocal();
+  if (e.key === CONFIG.storageKey && window.location.hash.toLowerCase().includes('admin')) renderAdmin();
 });
 
 /* =========================================================
@@ -470,7 +408,7 @@ function renderQuestion() {
   }
 }
 
-function advance() { cloudSendAnswer(state.step); state.step++; renderQuiz(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+function advance() { state.step++; renderQuiz(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
 
 /* ---------- Q1: playful 3-step confirmation ---------- */
 function openConfirm() {
@@ -569,8 +507,6 @@ function submit() {
   list.push(sub);
   saveSubmissions(list);
   state.lastSubmission = sub;
-  cloudSendAnswer(state.step);
-  cloudSendDone();
   celebrate();
 }
 
@@ -625,9 +561,9 @@ function renderThanks() {
 }
 
 /* =========================================================
-   ADMIN VIEW (#admin) — local fallback (no Firebase configured)
+   ADMIN VIEW (#admin)
    ========================================================= */
-function renderAdminLocal(note = '') {
+function renderAdmin(note = '') {
   const all = loadSubmissions();
   const list = all.slice().reverse();
 
@@ -678,7 +614,7 @@ function renderAdminLocal(note = '') {
 
   const msg = document.getElementById('adminMsg');
 
-  document.getElementById('refreshBtn').onclick = () => renderAdminLocal('Aggiornato.');
+  document.getElementById('refreshBtn').onclick = () => renderAdmin('Aggiornato.');
 
   const t = document.getElementById('expTxt');
   if (t) t.onclick = () => {
@@ -696,7 +632,7 @@ function renderAdminLocal(note = '') {
     if (confirm('Cancellare tutte le risposte salvate su questo dispositivo? L’azione non si può annullare.')) {
       saveSubmissions([]);
       state.step = -1; state.answers = Array(QUESTIONS.length).fill(''); state.lastSubmission = null;
-      renderAdminLocal('Dati cancellati.');
+      renderAdmin('Dati cancellati.');
     }
   };
 
@@ -706,227 +642,6 @@ function renderAdminLocal(note = '') {
     catch (e) { msg.textContent = 'Copia non riuscita: usa “Scarica testo”.'; }
   });
 }
-
-/* =========================================================
-   ADMIN VIEW (#admin) — live answers (Firebase Auth + Realtime Database)
-   ========================================================= */
-let adminGen = 0, adminStop = null, fbModules = null;
-
-function stopAdminWatch() {
-  adminGen++;
-  if (adminStop) { adminStop(); adminStop = null; }
-}
-
-function renderAdmin(note = '') {
-  stopAdminWatch();
-  return cloudEnabled() ? renderAdminCloud() : renderAdminLocal(note);
-}
-
-function loadFirebase() {
-  if (!fbModules) {
-    const base = 'https://www.gstatic.com/firebasejs/10.12.2/';
-    fbModules = Promise.all([import(base + 'firebase-app.js'), import(base + 'firebase-auth.js'), import(base + 'firebase-database.js')])
-      .then(([appM, authM, dbM]) => {
-        const fbApp = appM.initializeApp(FB);
-        return { A: authM, D: dbM, auth: authM.getAuth(fbApp), db: dbM.getDatabase(fbApp) };
-      });
-    fbModules.catch(() => { fbModules = null; });
-  }
-  return fbModules;
-}
-
-async function renderAdminCloud() {
-  const gen = adminGen;
-  app.innerHTML = `
-    <section class="screen letter rounded-[2rem] px-7 py-10 text-center">
-      <div class="text-4xl mb-3 pulse-heart" aria-hidden="true">🗝️</div>
-      <p class="text-plum/70">Connessione in corso…</p>
-    </section>`;
-  let fb;
-  try { fb = await loadFirebase(); }
-  catch (e) {
-    if (gen === adminGen) app.innerHTML = `
-      <section class="screen letter rounded-[2rem] px-7 py-10 text-center">
-        <p class="text-roseDeep font-semibold">Impossibile caricare Firebase. Controlla la connessione e ricarica la pagina.</p>
-      </section>`;
-    return;
-  }
-  if (gen !== adminGen) return;
-  let stopDb = () => {};
-  const stopAuth = fb.A.onAuthStateChanged(fb.auth, user => {
-    if (gen !== adminGen) return;
-    stopDb(); stopDb = () => {};
-    if (user) stopDb = showLive(fb, gen); else showLogin(fb, gen);
-  });
-  adminStop = () => { stopAuth(); stopDb(); };
-}
-
-function showLogin(fb, gen) {
-  app.innerHTML = `
-    <section class="screen letter rounded-[2rem] px-7 py-10 sm:px-11 max-w-md mx-auto">
-      <div class="text-center">
-        <div class="text-4xl mb-3" aria-hidden="true">🗝️</div>
-        <h2 class="font-display text-3xl font-semibold text-plum">Accesso riservato</h2>
-        <p class="text-sm text-plum/60 mt-1">Solo tu puoi leggere le sue risposte.</p>
-      </div>
-      <form id="loginForm" class="mt-7 space-y-4">
-        <label class="block text-sm font-semibold text-plum/70">Email
-          <input id="admEmail" type="email" autocomplete="username" required
-            class="mt-1 w-full rounded-xl border-2 border-petal bg-white/90 p-3 text-lg text-plum focus:border-rose focus:outline-none">
-        </label>
-        <label class="block text-sm font-semibold text-plum/70">Password
-          <input id="admPass" type="password" autocomplete="current-password" required
-            class="mt-1 w-full rounded-xl border-2 border-petal bg-white/90 p-3 text-lg text-plum focus:border-rose focus:outline-none">
-        </label>
-        <p id="loginMsg" class="text-sm text-roseDeep font-semibold min-h-[1.25rem]" role="status"></p>
-        <button class="btn w-full bg-rose hover:bg-roseDeep text-white font-bold rounded-full py-3.5 text-lg shadow-lg shadow-rose/30">Entra</button>
-      </form>
-      <p class="text-center mt-6"><a href="#" class="text-sm font-semibold text-plum/60 hover:text-plum">← Vai al questionario</a></p>
-    </section>`;
-  const form = document.getElementById('loginForm');
-  const msg = document.getElementById('loginMsg');
-  form.onsubmit = async e => {
-    e.preventDefault();
-    const btn = form.querySelector('button');
-    btn.disabled = true; msg.textContent = '';
-    try {
-      await fb.A.signInWithEmailAndPassword(fb.auth, document.getElementById('admEmail').value.trim(), document.getElementById('admPass').value);
-    } catch (err) {
-      if (gen !== adminGen) return;
-      msg.textContent = err.code === 'auth/network-request-failed' ? 'Connessione assente, riprova.'
-        : err.code === 'auth/too-many-requests' ? 'Troppi tentativi, riprova tra qualche minuto.'
-        : 'Email o password non corretti.';
-      btn.disabled = false;
-    }
-  };
-  document.getElementById('admEmail').focus();
-}
-
-// Firebase may hand `answers` back as an array or as an object; normalise either into one submission.
-function toCloudSub(sid, v) {
-  const answers = Array(QUESTIONS.length).fill('');
-  let first = Infinity, last = 0, count = 0;
-  Object.entries((v && v.answers) || {}).forEach(([key, r]) => {
-    const i = Number(key);
-    if (!r || !Number.isInteger(i) || i < 0 || i >= QUESTIONS.length) return;
-    answers[i] = String(r.a ?? '');
-    if (answers[i]) count++;
-    first = Math.min(first, r.t || Date.now()); last = Math.max(last, r.t || 0);
-  });
-  return {
-    id: sid, answers, count, last,
-    date: new Date(first === Infinity ? Date.now() : first).toISOString(),
-    done: !!(v && v.done === true)
-  };
-}
-
-function cloudCard(sub, fresh) {
-  const status = sub.done
-    ? '<span class="rounded-full px-3 py-0.5 text-sm font-bold bg-rose text-white">Completata 💖</span>'
-    : `<span class="rounded-full px-3 py-0.5 text-sm font-bold bg-lilac text-plum">In corso · ${sub.count}/${QUESTIONS.length}</span>`;
-  const rows = QUESTIONS.map((q, i) => !sub.answers[i] ? '' : `
-    <li>
-      <p class="text-sm text-plum/60 font-semibold">${i + 1}. ${esc(q.text)}</p>
-      ${q.type === 'yn'
-        ? `<p class="mt-1 inline-block rounded-full px-3 py-0.5 text-sm font-bold ${sub.answers[i] === 'Sì' ? 'bg-rose text-white' : 'bg-lilac text-plum'}">${esc(sub.answers[i])}${q.confirm && sub.answers[i] === 'Sì' ? ' (confermato 3 volte 💕)' : ''}</p>`
-        : `<p class="mt-1 text-plum leading-relaxed whitespace-pre-wrap font-display text-xl">${esc(sub.answers[i])}</p>`}
-    </li>`).join('');
-  return `
-    <article class="${fresh ? 'fresh ' : ''}rounded-2xl bg-white/90 border border-petal p-5 sm:p-6 mb-5">
-      <header class="flex flex-wrap justify-between items-baseline gap-2 mb-1">
-        <h3 class="font-display text-2xl font-semibold text-plum">${formatDate(sub.date)}</h3>
-        ${status}
-      </header>
-      <p class="text-sm text-plum/55 mb-4">Ultima risposta: ${formatDate(sub.last)}</p>
-      <ol class="space-y-4">${rows}</ol>
-      <div class="no-print mt-5 flex gap-5">
-        <button data-copy="${esc(sub.id)}" class="btn text-sm font-semibold text-roseDeep hover:text-plum">Copia come testo</button>
-        <button data-del="${esc(sub.id)}" class="btn text-sm font-semibold text-plum/50 hover:text-roseDeep">Elimina</button>
-      </div>
-    </article>`;
-}
-
-// Returns the unsubscribe function for the live listener.
-function showLive(fb, gen) {
-  app.innerHTML = `
-    <section class="screen letter rounded-[2rem] px-5 py-8 sm:px-9 sm:py-10">
-      <div class="flex flex-wrap justify-between items-center gap-3 mb-6">
-        <div>
-          <h2 class="font-display text-3xl sm:text-4xl font-semibold text-plum">Le sue risposte</h2>
-          <p class="text-sm text-plum/60"><span class="live-dot mr-1.5" aria-hidden="true"></span><span id="liveInfo">Connessione…</span></p>
-        </div>
-        <a href="#" class="btn no-print rounded-full px-5 py-2.5 font-semibold border-2 border-petal text-plum hover:bg-blush">Vai al questionario</a>
-      </div>
-      <div class="no-print flex flex-wrap gap-2 mb-4">
-        <button id="expTxt" class="btn rounded-full px-4 py-2 text-sm font-bold bg-rose text-white hover:bg-roseDeep">Scarica testo</button>
-        <button id="expPrint" class="btn rounded-full px-4 py-2 text-sm font-bold bg-white border-2 border-petal text-plum hover:bg-blush">Stampa o salva PDF</button>
-        <button id="signOutBtn" class="btn rounded-full px-4 py-2 text-sm font-bold bg-white border-2 border-petal text-plum hover:bg-blush">Esci</button>
-      </div>
-      <p id="adminMsg" class="text-sm text-roseDeep font-semibold mb-3 min-h-[1.25rem]" role="status"></p>
-      <div id="cloudList"></div>
-    </section>`;
-  const info = document.getElementById('liveInfo');
-  const msg = document.getElementById('adminMsg');
-  const listEl = document.getElementById('cloudList');
-  const seen = new Map();
-  let current = [], firstSnapshot = true;
-
-  document.getElementById('signOutBtn').onclick = () => fb.A.signOut(fb.auth);
-  document.getElementById('expPrint').onclick = () => window.print();
-  document.getElementById('expTxt').onclick = () => {
-    if (!current.length) { msg.textContent = 'Non c’è ancora niente da scaricare.'; return; }
-    const blob = new Blob([current.map(submissionAsText).join('\n\n──────────\n\n')], { type: 'text/plain' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob); a.download = 'le-sue-risposte.txt';
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-  };
-  listEl.onclick = async e => {
-    const copy = e.target.closest('[data-copy]'), del = e.target.closest('[data-del]');
-    if (copy) {
-      const sub = current.find(s => s.id === copy.dataset.copy);
-      try { await navigator.clipboard.writeText(submissionAsText(sub)); msg.textContent = 'Copiato negli appunti.'; }
-      catch (err) { msg.textContent = 'Copia non riuscita: usa “Scarica testo”.'; }
-    } else if (del && confirm('Eliminare questa risposta dal database? L’azione non si può annullare.')) {
-      try { await fb.D.remove(fb.D.ref(fb.db, 'submissions/' + del.dataset.del)); msg.textContent = 'Eliminata.'; }
-      catch (err) { msg.textContent = 'Eliminazione non riuscita.'; }
-    }
-  };
-
-  return fb.D.onValue(fb.D.ref(fb.db, 'submissions'), snap => {
-    if (gen !== adminGen) return;
-    current = Object.entries(snap.val() || {}).map(([sid, v]) => toCloudSub(sid, v)).sort((a, b) => b.last - a.last);
-    let anyFresh = false;
-    listEl.innerHTML = current.length
-      ? current.map(sub => {
-          const fresh = !firstSnapshot && (!seen.has(sub.id) || sub.last > seen.get(sub.id));
-          anyFresh = anyFresh || fresh;
-          seen.set(sub.id, sub.last);
-          return cloudCard(sub, fresh);
-        }).join('')
-      : `<div class="text-center py-10">
-           <div class="text-4xl mb-3" aria-hidden="true">🌷</div>
-           <p class="text-plum/75">Ancora nessuna risposta.</p>
-           <p class="text-sm text-plum/55 mt-2">Appariranno qui, una per una, appena lei risponde.</p>
-         </div>`;
-    firstSnapshot = false;
-    info.textContent = `Live · ${current.length} ${current.length === 1 ? 'sessione' : 'sessioni'} · aggiornato ${new Date().toLocaleTimeString('it-IT')}`;
-    msg.textContent = '';
-    if (anyFresh) {
-      heartBurst(window.innerWidth / 2, 140, 10);
-      if (document.hidden) document.title = '💌 Nuova risposta!';
-    }
-  }, err => {
-    info.textContent = 'Non connesso';
-    msg.textContent = /permission/i.test((err && (err.code || err.message)) || '')
-      ? 'Accesso negato: questo account non è quello dell’amministratore.'
-      : 'Errore di connessione, riprovo…';
-  });
-}
-
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && window.location.hash.toLowerCase() === '#admin') document.title = 'Risultati 🗝️';
-});
 
 /* Start */
 route();
